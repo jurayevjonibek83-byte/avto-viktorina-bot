@@ -1,7 +1,8 @@
 import logging
 import random
 import time
-from datetime import time as dt_time
+import os
+from datetime import time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 from collections import defaultdict
 
@@ -11,11 +12,9 @@ from telegram.ext import (
     PollAnswerHandler, filters, ContextTypes
 )
 
-# ========== BOT TOKEN ==========
-# Bu yerga o'zingizning bot tokeningizni yozing
-TOKEN = "8999046582:AAGTko9xgtVqN791RnBUGL0HFJY5oaLpwd0"
+# Token (Railway Variables dan olinadi)
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# ========== RUSCHA AVTO SAVOLLAR ==========
 QUESTIONS = [
     {
         "question": "Какой автомобиль считается самым продаваемым в мире за всё время?",
@@ -79,63 +78,50 @@ QUESTIONS = [
     },
 ]
 
-# Qiziqarli stikerlar
-STICKERS = [
-    "🚗💨", "🏎️🔥", "🚙✨", "🚘💪", "🚕😎",
-    "🚛💥", "🚓🚨", "🛻🔥", "🚌😂", "🏍️💨",
-    "🏁🔥", "🔧😎", "🛠️💪", "⚡🚗", "🌪️🚘"
-]
-
+STICKERS = ["🚗💨", "🏎️🔥", "🚙✨", "🚘💪", "🚕😎", "🚛💥", "🚓🚨", "🛻🔥", "🚌😂", "🏍️💨", "🏁🔥", "🔧😎", "🛠️💪", "⚡🚗", "🌪️🚘"]
 TRIGGERS = ["savol yubor", "savol", "викторина", "вопрос", "quiz", "viktorina"]
-COOLDOWN = 60  # 1 daqiqa
+COOLDOWN = 60
 
-scores = defaultdict(lambda: defaultdict(int))
+# Kunlik va haftalik ballar
+daily_scores = defaultdict(lambda: defaultdict(int))
+weekly_scores = defaultdict(lambda: defaultdict(int))
 active_polls = {}
 chat_data = {}
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚗 *Авто-викторина боти*\n\n"
         "• «savol yubor» — савол юборади\n"
         "• /reyting — ҳозирги натижалар\n"
-        "• Ҳар куни 22:00 да (Тошкент вақти) Топ-3 эълон қилинади",
+        "• Ҳар куни 22:00 да Топ-3\n"
+        "• Ҳар 7 кунда 19:00 да ҳафталик Топ-3",
         parse_mode="Markdown"
     )
 
-
 async def reyting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    users = scores.get(chat_id, {})
-
+    users = daily_scores.get(chat_id, {})
     if not users:
         await update.message.reply_text("Ҳали ҳеч ким балл олмаган.")
         return
 
     sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)[:10]
-    text = "📊 *Ҳозирги рейтинг:*\n\n"
+    text = "📊 *Ҳозирги (кунлик) рейтинг:*\n\n"
     medals = ["🥇", "🥈", "🥉"]
-
     for i, (user_id, score) in enumerate(sorted_users):
         try:
             user = await context.bot.get_chat(user_id)
             name = user.first_name or "Номаълум"
         except:
             name = f"ID:{user_id}"
-
         if i < 3:
             text += f"{medals[i]} {name} — *{score}* балл\n"
         else:
             text += f"{i+1}. {name} — *{score}* балл\n"
-
     await update.message.reply_text(text, parse_mode="Markdown")
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -148,12 +134,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     now = time.time()
-
     if chat_id not in chat_data:
         chat_data[chat_id] = {"last_time": 0}
 
     data = chat_data[chat_id]
-
     if now - data["last_time"] < COOLDOWN:
         qolgan = int(COOLDOWN - (now - data["last_time"]))
         await update.message.reply_text(f"⏳ Бироз кутинг... Янги савол {qolgan} сониядан кейин.")
@@ -162,11 +146,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = random.choice(QUESTIONS)
     data["last_time"] = now
 
-    # Stiker yuborish
     sticker = random.choice(STICKERS)
     await update.message.reply_text(sticker)
 
-    # Poll yuborish
     message = await context.bot.send_poll(
         chat_id=chat_id,
         question=f"❓ {q['question']}",
@@ -180,7 +162,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "chat_id": chat_id,
         "correct": q["correct"]
     }
-
 
 async def receive_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.poll_answer
@@ -196,43 +177,67 @@ async def receive_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE
     correct = poll_info["correct"]
 
     if selected == correct:
-        scores[chat_id][user_id] += 1
-
+        daily_scores[chat_id][user_id] += 1
+        weekly_scores[chat_id][user_id] += 1
 
 async def daily_winner(context: ContextTypes.DEFAULT_TYPE):
-    for chat_id, users in scores.items():
+    for chat_id, users in daily_scores.items():
         if not users:
             continue
-
-        sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)
-        top3 = sorted_users[:3]
-
-        if not top3:
+        sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)[:3]
+        if not sorted_users:
             continue
 
-        text = "🏆 *Бугунги якуний натижалар:*\n\n"
+        text = "🏆 *Бугунги Топ-3:*\n\n"
         medals = ["🥇", "🥈", "🥉"]
-
-        for i, (user_id, score) in enumerate(top3):
+        for i, (user_id, score) in enumerate(sorted_users):
             try:
                 user = await context.bot.get_chat(user_id)
                 name = user.first_name or "Номаълум"
             except:
                 name = f"ID:{user_id}"
-
             text += f"{medals[i]} {i+1}-ўрин: *{name}* — {score} балл\n"
-
-        text += "\n🎉 Tabriklaymiz barcha ishtirokchilarni!"
+        text += "\n🎉 Tabriklaymiz!"
 
         try:
             await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"Xato: {e}")
+            logger.error(e)
 
-        scores[chat_id].clear()
+        daily_scores[chat_id].clear()
 
+async def weekly_winner(context: ContextTypes.DEFAULT_TYPE):
+    for chat_id, users in weekly_scores.items():
+        if not users:
+            continue
+        sorted_users = sorted(users.items(), key=lambda x: x[1], reverse=True)[:3]
+        if not sorted_users:
+            continue
+
+        text = "🏆 *Ҳафталик Топ-3 (7 кун):*\n\n"
+        medals = ["🥇", "🥈", "🥉"]
+        for i, (user_id, score) in enumerate(sorted_users):
+            try:
+                user = await context.bot.get_chat(user_id)
+                name = user.first_name or "Номаълум"
+            except:
+                name = f"ID:{user_id}"
+            text += f"{medals[i]} {i+1}-ўрин: *{name}* — {score} балл\n"
+        text += "\n🎉 Tabriklaymiz! Баллар нолга тушди."
+
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(e)
+
+        weekly_scores[chat_id].clear()
+        daily_scores[chat_id].clear()
 
 def main():
+    if not TOKEN:
+        print("TELEGRAM_BOT_TOKEN topilmadi!")
+        return
+
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -240,17 +245,25 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, handle_message))
     app.add_handler(PollAnswerHandler(receive_poll_answer))
 
-    # Har kuni 22:00 Toshkent vaqti
     tashkent = ZoneInfo("Asia/Tashkent")
+
+    # Har kuni 22:00
     app.job_queue.run_daily(
         daily_winner,
         time=dt_time(hour=22, minute=0, tzinfo=tashkent),
         name="daily_winner"
     )
 
+    # Har 7 kunda 19:00 (birinchi marta 7 kundan keyin)
+    app.job_queue.run_repeating(
+        weekly_winner,
+        interval=timedelta(days=7),
+        first=timedelta(days=7),
+        name="weekly_winner"
+    )
+
     print("Bot ishga tushdi...")
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
